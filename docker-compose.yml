@@ -1,0 +1,93 @@
+# Keelwatch: Docker security posture dashboard
+#
+#   1. openssl rand -base64 24 > keelwatch_password.txt
+#      sudo chown 65532:65532 keelwatch_password.txt && sudo chmod 400 keelwatch_password.txt
+#      (Keelwatch runs as the unprivileged user 65532, so it must own the file)
+#   2. docker compose up -d --build
+#   3. open http://127.0.0.1:8090  (log in with the password from step 1)
+#
+# Keelwatch never touches the Docker socket directly. A read-only socket
+# proxy (POST=0) sits in between on an internal network.
+
+services:
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    container_name: keelwatch-socket-proxy
+    restart: unless-stopped
+    environment:
+      POST: 0          # read-only API: Keelwatch can never start/stop/exec anything
+      CONTAINERS: 1    # list, inspect, top, stats
+      IMAGES: 1        # list/inspect, and image export for Trivy CVE scans
+      INFO: 1
+      NETWORKS: 1
+      EVENTS: 1
+      SYSTEM: 1        # disk usage (docker system df)
+      VERSION: 1
+      EXEC: 0
+      VOLUMES: 0
+      SECRETS: 0
+      SERVICES: 0
+      AUTH: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [socket]
+    read_only: true
+    tmpfs: [/run]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 64m
+    pids_limit: 50
+    logging: { driver: json-file, options: { max-size: "5m", max-file: "2" } }
+
+  keelwatch:
+    build: .
+    image: keelwatch:local
+    container_name: keelwatch
+    restart: unless-stopped
+    depends_on: [socket-proxy]
+    environment:
+      DOCKER_HOST: tcp://socket-proxy:2375
+      KEELWATCH_PASSWORD_FILE: /run/secrets/keelwatch_password
+      KEELWATCH_SCAN_INTERVAL: 30m
+      # Folders with your compose/.env files, mounted read-only below
+      KEELWATCH_COMPOSE_DIRS: /compose
+      KEELWATCH_DAEMON_JSON: /host/etc/docker/daemon.json
+      KEELWATCH_NOTIFY_MIN_SEVERITY: high
+      # Pick any notification channels (all optional):
+      # KEELWATCH_NTFY_URL: https://ntfy.sh/your-private-topic
+      # KEELWATCH_DISCORD_WEBHOOK_FILE: /run/secrets/discord_webhook
+      # KEELWATCH_TELEGRAM_TOKEN_FILE: /run/secrets/telegram_token
+      # KEELWATCH_TELEGRAM_CHAT_ID: "123456789"
+      # KEELWATCH_BASE_URL: https://keelwatch.example.com
+      # Optional Falco integration (Falcosidekick webhook):
+      # KEELWATCH_FALCO_TOKEN_FILE: /run/secrets/falco_token
+    secrets: [keelwatch_password]
+    ports:
+      - "127.0.0.1:8090:8080"   # localhost only; expose via Cloudflare Tunnel / reverse proxy
+    volumes:
+      - keelwatch-data:/data
+      # Lets Keelwatch audit daemon settings (TCP API, userns, log rotation).
+      # The file must exist first, or Docker creates a *directory* at that path:
+      #   [ -f /etc/docker/daemon.json ] || echo '{}' | sudo tee /etc/docker/daemon.json
+      # - /etc/docker/daemon.json:/host/etc/docker/daemon.json:ro
+      # Change to where your stacks live (e.g. /srv/pi5-lab/stacks):
+      - ./:/compose:ro
+    networks: [socket, egress]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g          # Trivy needs headroom when scanning large images
+    cpus: 1.0
+    pids_limit: 200
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+
+networks:
+  socket:
+    internal: true   # the proxy is unreachable from anywhere else
+  egress: {}         # registry update checks + Trivy DB downloads
+
+volumes:
+  keelwatch-data:
+
+secrets:
+  keelwatch_password:
+    file: ./keelwatch_password.txt

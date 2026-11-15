@@ -1,0 +1,6 @@
+.git
+*.md
+keelwatch_password.txt
+*.txt
+docs
+.github

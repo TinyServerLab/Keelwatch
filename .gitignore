@@ -1,0 +1,5 @@
+/keelwatch
+/dist
+*.txt
+.env
+data/
