@@ -28,7 +28,7 @@
 
   async function api(path, opts = {}) {
     const o = { credentials: "same-origin", ...opts, headers: { "X-Keelwatch": "1", ...(opts.body ? { "Content-Type": "application/json" } : {}), ...(opts.headers || {}) } };
-    const r = await fetch(path, o);
+    const r = await fetch(path.replace(/^\//, ""), o); // relative: works under a base path
     if (r.status === 401 && path !== "/api/login") { showLogin(); throw new Error("login required"); }
     const ct = r.headers.get("content-type") || "";
     const data = ct.includes("json") ? await r.json() : await r.text();
@@ -300,21 +300,23 @@
           <p class="muted small">Supported: ntfy, Discord, Slack, Telegram, generic webhook. Keelwatch sends new findings at or above the configured severity, plus runtime alerts.</p>
           <button class="btn small" id="testn" ${st.channels.length ? "" : "disabled"}>Send test notification</button>
           <h2 style="margin-top:20px">Falco (optional)</h2>
-          <p class="small">${st.falcoReady ? 'Ready. Point Falcosidekick at <code>' + esc(location.origin) + '/api/falco</code> with header <code>Authorization: Bearer &lt;KEELWATCH_FALCO_TOKEN&gt;</code>.' : 'Off. Set <code>KEELWATCH_FALCO_TOKEN</code> to accept Falcosidekick webhooks for kernel-level runtime detection.'}</p>
+          <p class="small">${st.falcoReady ? 'Ready. Point Falcosidekick at <code>' + esc(new URL("api/falco", document.baseURI).href) + '</code> with header <code>Authorization: Bearer &lt;KEELWATCH_FALCO_TOKEN&gt;</code>.' : 'Off. Set <code>KEELWATCH_FALCO_TOKEN</code> to accept Falcosidekick webhooks for kernel-level runtime detection.'}</p>
         </div>
       </div>
       <div class="card"><h2>Suppressed findings (${st.suppressed ? st.suppressed.length : 0})</h2><div class="list">
         ${st.suppressed && st.suppressed.length ? st.suppressed.map((x) => `<div class="row"><span class="pill info">muted</span><div class="t"><b>${esc(x.Title || x.ID)}</b><span>${esc(x.Target || "no longer detected")} · “${esc(x.Note)}”</span></div><button class="btn small" data-act="unsup" data-id="${esc(x.ID)}">Restore</button></div>`).join("") : '<div class="empty">Nothing suppressed.</div>'}
       </div></div>
-      <div class="card"><h2>Data</h2><div class="f-actions"><a class="btn small" href="/api/export" download>Export latest report (JSON)</a><button class="btn small" id="logout">Sign out</button></div></div>`;
+      <div class="card"><h2>Data</h2><div class="f-actions"><a class="btn small" href="api/export" download>Export latest report (JSON)</a><button class="btn small" id="logout">Sign out</button></div></div>`;
     const t = $("#testn"); if (t) t.onclick = async () => { try { await api("/api/notify/test", { method: "POST" }); toast("Test sent"); } catch (e) { toast("Failed: " + e.message); } };
     $("#logout").onclick = async () => { await api("/api/logout", { method: "POST" }); showLogin(); };
     bindFindingActions(view);
   }
 
   // ---------- boot ----------
+  // Under a base path (/keelwatch), keep the URL ending in "/" so hash links stay on this page.
+  if (!location.pathname.endsWith("/")) history.replaceState(null, "", location.pathname + "/" + location.search + location.hash);
   async function start() {
-    const s = await fetch("/api/session", { credentials: "same-origin" }).then((r) => r.json());
+    const s = await fetch("api/session", { credentials: "same-origin" }).then((r) => r.json());
     if (s.authRequired && !s.authenticated) { showLogin(); return; }
     $("#login").hidden = true; $("#app").hidden = false;
     await refresh();

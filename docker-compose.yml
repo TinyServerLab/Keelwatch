@@ -58,6 +58,8 @@ services:
       # KEELWATCH_TELEGRAM_TOKEN_FILE: /run/secrets/telegram_token
       # KEELWATCH_TELEGRAM_CHAT_ID: "123456789"
       # KEELWATCH_BASE_URL: https://keelwatch.example.com
+      # Serving under a path, e.g. https://apps.example.com/keelwatch ? Set:
+      KEELWATCH_BASE_PATH: /keelwatch
       # Optional Falco integration (Falcosidekick webhook):
       # KEELWATCH_FALCO_TOKEN_FILE: /run/secrets/falco_token
     secrets: [keelwatch_password]
@@ -71,7 +73,7 @@ services:
       # - /etc/docker/daemon.json:/host/etc/docker/daemon.json:ro
       # Change to where your stacks live (e.g. /srv/pi5-lab/stacks):
       - ./:/compose:ro
-    networks: [socket, egress]
+    networks: [socket, egress, reverseproxy]
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
@@ -84,6 +86,9 @@ networks:
   socket:
     internal: true   # the proxy is unreachable from anywhere else
   egress: {}         # registry update checks + Trivy DB downloads
+  reverseproxy:
+    external: true
+    name: shared-web
 
 volumes:
   keelwatch-data:

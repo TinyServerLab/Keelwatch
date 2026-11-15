@@ -31,6 +31,7 @@ type Options struct {
 	FalcoToken   string
 	Settings     map[string]any // read-only settings shown in the UI
 	Demo         bool
+	BasePath     string // e.g. "/keelwatch" when served under a sub-path
 }
 
 type Server struct {
@@ -68,6 +69,9 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		b, _ := fs.ReadFile(sub, "index.html")
+		if base := s.base(); base != "" {
+			b = []byte(strings.Replace(string(b), "<head>", "<head>\n<base href=\""+base+"/\">", 1))
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
 		_, _ = w.Write(b)
@@ -90,13 +94,28 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/alerts/{id}/ack", s.protect(s.ack))
 	mux.Handle("POST /api/alerts/ack-all", s.protect(s.ackAll))
 	mux.Handle("POST /api/notify/test", s.protect(s.testNotify))
-	return securityHeaders(mux)
+	h := securityHeaders(mux)
+	base := s.base()
+	if base == "" {
+		return h
+	}
+	// Served under a sub-path. Works whether the reverse proxy keeps the
+	// prefix (/keelwatch/api/...) or strips it (/api/...).
+	outer := http.NewServeMux()
+	outer.Handle(base+"/", http.StripPrefix(base, h))
+	outer.HandleFunc(base, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, base+"/", http.StatusMovedPermanently)
+	})
+	outer.Handle("/", h)
+	return outer
 }
+
+func (s *Server) base() string { return strings.TrimRight(s.opt.BasePath, "/") }
 
 func securityHeaders(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hd := w.Header()
-		hd.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		hd.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
 		hd.Set("X-Content-Type-Options", "nosniff")
 		hd.Set("Referrer-Policy", "no-referrer")
 		hd.Set("X-Frame-Options", "DENY")

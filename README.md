@@ -83,8 +83,13 @@ All settings are environment variables. Any secret can also be given as `NAME_FI
 | `KEELWATCH_TELEGRAM_TOKEN` + `_TELEGRAM_CHAT_ID` | — | Telegram bot |
 | `KEELWATCH_WEBHOOK_URL` | — | Generic JSON POST |
 | `KEELWATCH_BASE_URL` | — | Link included in notifications |
+| `KEELWATCH_BASE_PATH` | — | Serve under a sub-path, e.g. `/keelwatch` for `https://apps.example.com/keelwatch` |
 | `KEELWATCH_FALCO_TOKEN` | — | Enables `POST /api/falco` for Falcosidekick |
 | `KEELWATCH_DEMO` | `false` | Simulated host |
+
+### Serving under a sub-path
+
+A subdomain such as `keelwatch.example.com` needs no extra settings. To serve under a path instead, e.g. `https://apps.example.com/keelwatch`, set `KEELWATCH_BASE_PATH=/keelwatch`. It works whether your reverse proxy keeps the `/keelwatch` prefix or strips it.
 
 ### Falco (optional, kernel-level runtime detection)
 

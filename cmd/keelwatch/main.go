@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -29,7 +30,9 @@ import (
 	"github.com/keelwatch/keelwatch/internal/store"
 )
 
-var version = "0.1.0"
+var version = "0.1.1"
+
+var basePathRe = regexp.MustCompile(`^(/[A-Za-z0-9._~-]+)+$`)
 
 func env(k, def string) string {
 	if v := strings.TrimSpace(os.Getenv(k)); v != "" {
@@ -191,11 +194,16 @@ func serve(log *slog.Logger) error {
 	}
 	addr := env("KEELWATCH_ADDR", ":8080")
 	falcoTok := secret("KEELWATCH_FALCO_TOKEN")
+	basePath := strings.TrimRight(env("KEELWATCH_BASE_PATH", ""), "/")
+	if basePath != "" && !basePathRe.MatchString(basePath) {
+		return fmt.Errorf("KEELWATCH_BASE_PATH %q must look like /keelwatch (letters, digits, - _ . ~ only)", basePath)
+	}
 	srv, err := server.New(server.Options{
 		Version: version, Password: secret("KEELWATCH_PASSWORD"), AuthDisabled: !boolEnv("KEELWATCH_AUTH", true) && !s.demo,
-		FalcoToken: falcoTok, Demo: s.demo,
+		FalcoToken: falcoTok, Demo: s.demo, BasePath: basePath,
 		Settings: map[string]any{
 			"Docker API":            s.dockerH,
+			"Base path":             basePath,
 			"Scan interval":         s.cfg.ScanInterval.String(),
 			"Registry update check": strconv.FormatBool(s.cfg.CheckUpdates) + " (cache " + s.cfg.RegistryTTL.String() + ")",
 			"CVE scanner":           map[bool]string{true: s.trivy + " (rescan every " + s.cfg.CVETTL.String() + ")", false: "off"}[s.eng.CVEEnabled()],
@@ -215,7 +223,7 @@ func serve(log *slog.Logger) error {
 		defer cancel()
 		_ = hs.Shutdown(sh)
 	}()
-	log.Info("Keelwatch listening", "addr", addr, "version", version)
+	log.Info("Keelwatch listening", "addr", addr, "version", version, "basePath", basePath)
 	if err := hs.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

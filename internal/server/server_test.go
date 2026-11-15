@@ -131,3 +131,42 @@ func TestEndToEnd(t *testing.T) {
 		t.Error("CSP missing")
 	}
 }
+
+func TestBasePath(t *testing.T) {
+	dir := t.TempDir()
+	st, _ := store.Open(dir)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dc, _ := docker.New("unix://" + dir + "/none.sock")
+	n := notify.New(notify.Config{})
+	eng := engine.New(engine.Config{}, dc, nil, nil, st, n, log)
+	srv, err := New(Options{Version: "t", Password: "p", BasePath: "/keelwatch/"}, eng, st, n, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	get := func(p string) (*http.Response, string) {
+		r, err := c.Get(ts.URL + p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(r.Body)
+		return r, string(b)
+	}
+	if r, _ := get("/keelwatch"); r.StatusCode != 301 || r.Header.Get("Location") != "/keelwatch/" {
+		t.Errorf("no trailing-slash redirect: %d %s", r.StatusCode, r.Header.Get("Location"))
+	}
+	r, body := get("/keelwatch/")
+	if r.StatusCode != 200 || !strings.Contains(body, `<base href="/keelwatch/">`) {
+		t.Errorf("index under base path: %d, base tag present=%v", r.StatusCode, strings.Contains(body, "<base"))
+	}
+	for _, p := range []string{"/keelwatch/assets/app.js", "/keelwatch/api/session", "/api/session", "/assets/app.js"} {
+		if r, _ := get(p); r.StatusCode != 200 {
+			t.Errorf("%s: %d", p, r.StatusCode)
+		}
+	}
+	if _, body := get("/keelwatch/assets/app.js"); strings.Contains(body, `fetch("/api`) {
+		t.Error("frontend still uses root-absolute API paths")
+	}
+}
