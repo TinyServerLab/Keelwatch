@@ -64,7 +64,7 @@ services:
       # KEELWATCH_FALCO_TOKEN_FILE: /run/secrets/falco_token
     secrets: [keelwatch_password]
     ports:
-      - "127.0.0.1:8090:8080"   # localhost only; expose via Cloudflare Tunnel / reverse proxy
+      - "127.0.0.1:8900:8080"   # localhost only; expose via Cloudflare Tunnel / reverse proxy
     volumes:
       - keelwatch-data:/data
       # Lets Keelwatch audit daemon settings (TCP API, userns, log rotation).
