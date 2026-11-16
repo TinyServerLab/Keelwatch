@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1.7
 # Multi-arch build: docker buildx build --platform linux/amd64,linux/arm64 -t keelwatch .
 
-ARG GO_VERSION=1.24
+ARG GO_VERSION=1.27
 # Trivy is pinned on purpose. Bump deliberately after checking the release
 # notes, and prefer pinning by digest (aquasec/trivy:0.71.2@sha256:...).
-ARG TRIVY_VERSION=0.71.2
+ARG TRIVY_VERSION=0.76.2
 
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS build
 ARG TARGETOS
