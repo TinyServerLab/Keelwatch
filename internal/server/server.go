@@ -6,15 +6,18 @@ import (
 	"crypto/subtle"
 	"embed"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/keelwatch/keelwatch/internal/engine"
+	"github.com/keelwatch/keelwatch/internal/hub"
 	"github.com/keelwatch/keelwatch/internal/model"
 	"github.com/keelwatch/keelwatch/internal/notify"
 	"github.com/keelwatch/keelwatch/internal/scan"
@@ -31,7 +34,9 @@ type Options struct {
 	FalcoToken   string
 	Settings     map[string]any // read-only settings shown in the UI
 	Demo         bool
-	BasePath     string // e.g. "/keelwatch" when served under a sub-path
+	BasePath     string            // e.g. "/keelwatch" when served under a sub-path
+	Agents       map[string]string // remote host name -> agent token (hub mode)
+	DataDir      string            // remote host state lives in DataDir/hosts/<name>
 }
 
 type Server struct {
@@ -41,6 +46,7 @@ type Server struct {
 	notif *notify.Notifier
 	auth  *auth
 	log   *slog.Logger
+	hosts map[string]*store.Store // remote hosts reporting through agents
 }
 
 func New(opt Options, eng *engine.Engine, st *store.Store, n *notify.Notifier, log *slog.Logger) (*Server, error) {
@@ -54,7 +60,31 @@ func New(opt Options, eng *engine.Engine, st *store.Store, n *notify.Notifier, l
 	if opt.AuthDisabled {
 		log.Warn("authentication is DISABLED (KEELWATCH_AUTH=off). Only do this behind an authenticating proxy such as Cloudflare Access.")
 	}
-	return &Server{opt: opt, eng: eng, st: st, notif: n, auth: a, log: log}, nil
+	hosts := map[string]*store.Store{}
+	for name := range opt.Agents {
+		if filepath.Base(name) != name || name == "." || name == ".." {
+			return nil, errors.New("invalid agent name " + name)
+		}
+		hs, err := store.Open(filepath.Join(opt.DataDir, "hosts", name))
+		if err != nil {
+			return nil, err
+		}
+		hosts[name] = hs
+	}
+	return &Server{opt: opt, eng: eng, st: st, notif: n, auth: a, log: log, hosts: hosts}, nil
+}
+
+// storeFor picks the host named by ?host= (empty = this host). Writes a 404 and returns nil if unknown.
+func (s *Server) storeFor(w http.ResponseWriter, r *http.Request) *store.Store {
+	h := r.URL.Query().Get("host")
+	if h == "" {
+		return s.st
+	}
+	if st := s.hosts[h]; st != nil {
+		return st
+	}
+	writeErr(w, http.StatusNotFound, "unknown host")
+	return nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -82,8 +112,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/login", s.login)
 	mux.HandleFunc("POST /api/logout", s.logout)
 	mux.HandleFunc("POST /api/falco", s.falco)
+	mux.HandleFunc("POST /api/agent/report", s.agentReport)
 
 	mux.Handle("GET /api/state", s.protect(s.state))
+	mux.Handle("GET /api/hosts", s.protect(s.hostList))
+	mux.Handle("DELETE /api/hosts/{name}", s.protect(s.removeHost))
+	mux.Handle("POST /api/hosts/{name}/restore", s.protect(s.restoreHost))
 	mux.Handle("GET /api/alerts", s.protect(s.alerts))
 	mux.Handle("GET /api/images/{id}/cves", s.protect(s.imageCVEs))
 	mux.Handle("GET /api/settings", s.protect(s.settings))
@@ -192,8 +226,17 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 		CVEEnabled   bool                 `json:"cveEnabled"`
 		Version      string               `json:"version"`
 		Demo         bool                 `json:"demo"`
+		Agent        *store.AgentInfo     `json:"agent,omitempty"` // set for a remote host
 	}
-	s.st.View(func(st *store.State) {
+	hs := s.storeFor(w, r)
+	if hs == nil {
+		return
+	}
+	hs.View(func(st *store.State) {
+		if st.Agent != nil {
+			cp := *st.Agent
+			out.Agent = &cp
+		}
 		if st.Snapshot != nil {
 			cp := *st.Snapshot
 			cp.Images = make([]model.ImageView, len(st.Snapshot.Images))
@@ -224,16 +267,24 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 		}
 		out.RecentAlerts = append([]model.Alert{}, alerts...)
 	})
-	out.Scanning = s.eng.Busy()
-	out.CVEEnabled = s.eng.CVEEnabled()
+	if out.Agent != nil {
+		out.CVEEnabled = out.Agent.CVEEnabled
+	} else if hs == s.st {
+		out.Scanning = s.eng.Busy()
+		out.CVEEnabled = s.eng.CVEEnabled()
+	}
 	out.Version = s.opt.Version
 	out.Demo = s.opt.Demo
 	writeJSON(w, out)
 }
 
 func (s *Server) alerts(w http.ResponseWriter, r *http.Request) {
+	hs := s.storeFor(w, r)
+	if hs == nil {
+		return
+	}
 	var out []model.Alert
-	s.st.View(func(st *store.State) { out = append(out, st.Alerts...) })
+	hs.View(func(st *store.State) { out = append(out, st.Alerts...) })
 	sort.Slice(out, func(i, j int) bool { return out[i].Time.After(out[j].Time) })
 	if out == nil {
 		out = []model.Alert{}
@@ -243,8 +294,12 @@ func (s *Server) alerts(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) imageCVEs(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	hs := s.storeFor(w, r)
+	if hs == nil {
+		return
+	}
 	var res *model.ImageScan
-	s.st.View(func(st *store.State) {
+	hs.View(func(st *store.State) {
 		if sc, ok := st.ImageScans[id]; ok {
 			cp := *sc
 			cp.CVEs = append([]model.CVE(nil), sc.CVEs...)
@@ -262,8 +317,28 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	type sup struct {
 		ID, Note, Title, Target string
 	}
+	hs := s.storeFor(w, r)
+	if hs == nil {
+		return
+	}
+	settings := s.opt.Settings
+	removedHosts := []string{}
 	var sups []sup
-	s.st.View(func(st *store.State) {
+	hs.View(func(st *store.State) {
+		if hs == s.st {
+			for n := range st.RemovedHosts {
+				removedHosts = append(removedHosts, n)
+			}
+			sort.Strings(removedHosts)
+		} else {
+			settings = map[string]any{"Reported by": "Keelwatch agent", "Agent version": "—", "Last report": "never"}
+			if a := st.Agent; a != nil {
+				settings["Agent version"] = a.Version
+				settings["Last report"] = a.ReceivedAt.Format(time.RFC3339)
+				settings["Scan interval"] = (time.Duration(a.IntervalSec) * time.Second).String()
+				settings["CVE scanner"] = map[bool]string{true: "on", false: "off"}[a.CVEEnabled]
+			}
+		}
 		titles := map[string]model.Finding{}
 		if st.Snapshot != nil {
 			for _, f := range st.Snapshot.Findings {
@@ -277,22 +352,31 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	})
 	sort.Slice(sups, func(i, j int) bool { return sups[i].Title < sups[j].Title })
 	writeJSON(w, map[string]any{
-		"settings":   s.opt.Settings,
-		"channels":   append([]string{}, s.notif.Channels()...),
-		"suppressed": sups,
-		"falcoReady": s.opt.FalcoToken != "",
-		"cveEnabled": s.eng.CVEEnabled(),
+		"settings":     settings,
+		"channels":     append([]string{}, s.notif.Channels()...),
+		"suppressed":   sups,
+		"falcoReady":   s.opt.FalcoToken != "",
+		"cveEnabled":   s.eng.CVEEnabled(),
+		"removedHosts": removedHosts,
 	})
 }
 
 func (s *Server) export(w http.ResponseWriter, r *http.Request) {
+	hs := s.storeFor(w, r)
+	if hs == nil {
+		return
+	}
 	var snap *model.Snapshot
-	s.st.View(func(st *store.State) { snap = st.Snapshot })
+	hs.View(func(st *store.State) { snap = st.Snapshot })
 	w.Header().Set("Content-Disposition", `attachment; filename="keelwatch-report-`+time.Now().UTC().Format("20060102-1504")+`.json"`)
 	writeJSON(w, snap)
 }
 
 func (s *Server) triggerScan(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("host") != "" {
+		writeErr(w, http.StatusConflict, "remote hosts scan on their agent's own schedule")
+		return
+	}
 	if !s.eng.Busy() {
 		go s.eng.ScanNow(context.Background())
 	}
@@ -306,53 +390,64 @@ func (s *Server) suppress(w http.ResponseWriter, r *http.Request) {
 	if body.Note == "" {
 		body.Note = "Accepted risk"
 	}
-	_ = s.st.Update(func(st *store.State) {
+	hs := s.storeFor(w, r)
+	if hs == nil {
+		return
+	}
+	_ = hs.Update(func(st *store.State) {
 		st.Suppressed[id] = truncate(body.Note, 200)
-		s.rescore(st)
+		hub.Rescore(st)
 	})
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
 func (s *Server) unsuppress(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	_ = s.st.Update(func(st *store.State) {
+	hs := s.storeFor(w, r)
+	if hs == nil {
+		return
+	}
+	_ = hs.Update(func(st *store.State) {
 		delete(st.Suppressed, id)
-		s.rescore(st)
+		hub.Rescore(st)
 	})
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
-// rescore updates the current snapshot immediately after a suppression change.
-func (s *Server) rescore(st *store.State) {
-	if st.Snapshot == nil {
-		return
-	}
-	for i := range st.Snapshot.Findings {
-		_, st.Snapshot.Findings[i].Suppressed = st.Suppressed[st.Snapshot.Findings[i].ID]
-	}
-	scan.Score(st.Snapshot)
-}
-
 func (s *Server) ack(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	_ = s.st.Update(func(st *store.State) {
+	hs := s.storeFor(w, r)
+	if hs == nil {
+		return
+	}
+	_ = hs.Update(func(st *store.State) {
 		for i := range st.Alerts {
 			if st.Alerts[i].ID == id {
 				st.Alerts[i].Acked = true
 			}
 		}
+		hub.Rescore(st)
 	})
-	s.eng.Trigger()
+	if hs == s.st {
+		s.eng.Trigger()
+	}
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
 func (s *Server) ackAll(w http.ResponseWriter, r *http.Request) {
-	_ = s.st.Update(func(st *store.State) {
+	hs := s.storeFor(w, r)
+	if hs == nil {
+		return
+	}
+	_ = hs.Update(func(st *store.State) {
 		for i := range st.Alerts {
 			st.Alerts[i].Acked = true
 		}
+		hub.Rescore(st)
 	})
-	s.eng.Trigger()
+	if hs == s.st {
+		s.eng.Trigger()
+	}
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
@@ -399,4 +494,130 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+// agentReport receives a remote host's scan from a Keelwatch agent.
+// The token, not the payload, decides which host the report belongs to.
+func (s *Server) agentReport(w http.ResponseWriter, r *http.Request) {
+	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	name := ""
+	for n, t := range s.opt.Agents {
+		if subtle.ConstantTimeCompare([]byte(tok), []byte(t)) == 1 {
+			name = n
+		}
+	}
+	if tok == "" || name == "" {
+		writeErr(w, http.StatusUnauthorized, "bad agent token")
+		return
+	}
+	if s.removed(name) {
+		writeErr(w, http.StatusGone, "host "+name+" was removed on the hub; restore it in Settings or stop this agent")
+		return
+	}
+	var rep hub.Report
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, hub.MaxReport)).Decode(&rep); err != nil || rep.Snapshot == nil {
+		writeErr(w, http.StatusBadRequest, "bad report")
+		return
+	}
+	var reply hub.Reply
+	if err := s.hosts[name].Update(func(st *store.State) { reply = hub.Receive(st, rep, time.Now().UTC()) }); err != nil {
+		writeErr(w, http.StatusInternalServerError, "store: "+err.Error())
+		return
+	}
+	s.log.Info("agent report", "host", name, "score", rep.Snapshot.Score, "findings", len(rep.Snapshot.Findings))
+	writeJSON(w, reply)
+}
+
+type hostRow struct {
+	ID         string                 `json:"id"` // "" = this host; else the agent name used in ?host=
+	Name       string                 `json:"name"`
+	Remote     bool                   `json:"remote"`
+	Reported   bool                   `json:"reported"`
+	Stale      bool                   `json:"stale"`
+	ScannedAt  time.Time              `json:"scannedAt"`
+	Score      int                    `json:"score"`
+	Grade      string                 `json:"grade"`
+	Containers int                    `json:"containers"`
+	Counts     map[model.Severity]int `json:"counts"`
+	Debt       model.Debt             `json:"debt"`
+}
+
+func hostSummary(id string, st *store.State, now time.Time) hostRow {
+	h := hostRow{ID: id, Name: id, Remote: id != "", Counts: map[model.Severity]int{}}
+	if st.Snapshot == nil {
+		return h
+	}
+	snap := st.Snapshot
+	h.Reported, h.ScannedAt, h.Score, h.Grade, h.Containers, h.Debt = true, snap.ScannedAt, snap.Score, snap.Grade, len(snap.Containers), snap.Debt
+	if snap.Host.Name != "" && !h.Remote {
+		h.Name = snap.Host.Name
+	}
+	for _, f := range snap.Findings {
+		if !f.Suppressed {
+			h.Counts[f.Severity]++
+		}
+	}
+	if a := st.Agent; a != nil {
+		every := time.Duration(a.IntervalSec) * time.Second
+		h.Stale = now.Sub(a.ReceivedAt) > 2*every+10*time.Minute
+	}
+	return h
+}
+
+// hostList summarises every host for the fleet view and host picker.
+func (s *Server) hostList(w http.ResponseWriter, r *http.Request) {
+	now := time.Now().UTC()
+	var out []hostRow
+	s.st.View(func(st *store.State) { out = append(out, hostSummary("", st, now)) })
+	if out[0].Name == "" {
+		out[0].Name = "this host"
+	}
+	names := make([]string, 0, len(s.hosts))
+	for n := range s.hosts {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		if !s.removed(n) {
+			s.hosts[n].View(func(st *store.State) { out = append(out, hostSummary(n, st, now)) })
+		}
+	}
+	writeJSON(w, out)
+}
+
+func (s *Server) removed(name string) bool {
+	var ok bool
+	s.st.View(func(st *store.State) { _, ok = st.RemovedHosts[name] })
+	return ok
+}
+
+// removeHost forgets a remote host's data and refuses its agent's reports until restored.
+// The agent token stays in KEELWATCH_AGENT_TOKENS; delete it there to revoke it for good.
+func (s *Server) removeHost(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	hs := s.hosts[name]
+	if hs == nil {
+		writeErr(w, http.StatusNotFound, "unknown host")
+		return
+	}
+	if err := s.st.Update(func(st *store.State) { st.RemovedHosts[name] = time.Now().UTC() }); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := hs.Reset(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.log.Info("remote host removed", "host", name)
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (s *Server) restoreHost(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if s.hosts[name] == nil {
+		writeErr(w, http.StatusNotFound, "unknown host")
+		return
+	}
+	_ = s.st.Update(func(st *store.State) { delete(st.RemovedHosts, name) })
+	writeJSON(w, map[string]bool{"ok": true})
 }

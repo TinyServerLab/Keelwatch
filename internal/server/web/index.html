@@ -13,7 +13,7 @@
 <div id="login" class="login" hidden>
   <form id="login-form" class="login-card">
     <div class="brand big"><span class="mark" aria-hidden="true"></span>Keelwatch</div>
-    <p class="muted">Docker security posture for this host.</p>
+    <p class="muted">Docker security posture for your hosts.</p>
     <label for="pw">Admin password</label>
     <input id="pw" type="password" autocomplete="current-password" required autofocus>
     <button type="submit" class="btn primary">Sign in</button>
@@ -28,6 +28,7 @@
     <a href="#/" data-route="overview"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 1 18 0"/><path d="M12 12l4-4"/><path d="M3 17h18"/></svg><span>Overview</span></a>
     <a href="#/findings" data-route="findings"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h6"/></svg><span>Findings</span><em id="nav-findings"></em></a>
     <a href="#/containers" data-route="containers"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="12" rx="1"/><path d="M7 7v12M11 7v12M15 7v12"/></svg><span>Containers</span></a>
+    <a href="#/network" data-route="network"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 12c6 0 6-6 10-6M7 12c6 0 6 6 10 6"/></svg><span>Network</span></a>
     <a href="#/images" data-route="images"><svg viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg><span>Images</span></a>
     <a href="#/runtime" data-route="runtime"><svg viewBox="0 0 24 24"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg><span>Runtime</span><em id="nav-alerts"></em></a>
     <a href="#/settings" data-route="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg><span>Settings</span></a>
@@ -41,6 +42,7 @@
       </div>
       <div class="top-actions">
         <span id="demo-badge" class="pill info" hidden>Demo data</span>
+        <select id="host-sel" aria-label="Host" hidden></select>
         <button id="scan-btn" class="btn">Scan now</button>
       </div>
     </header>

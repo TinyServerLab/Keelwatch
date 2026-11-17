@@ -34,6 +34,17 @@ type State struct {
 	CreatedAt   time.Time                      `json:"createdAt"`
 	SchemaVer   int                            `json:"schemaVersion"`
 	NotifiedIDs map[string]time.Time           `json:"notifiedIds"`
+	Agent       *AgentInfo                     `json:"agent,omitempty"` // set on the hub for a remote host
+	// RemovedHosts (hub only): agents removed in the UI; their reports are refused until restored.
+	RemovedHosts map[string]time.Time `json:"removedHosts,omitempty"`
+}
+
+// AgentInfo describes the last report a hub received from a remote agent.
+type AgentInfo struct {
+	ReceivedAt  time.Time `json:"receivedAt"`
+	IntervalSec int       `json:"intervalSec"`
+	Version     string    `json:"version"`
+	CVEEnabled  bool      `json:"cveEnabled"`
 }
 
 type Baseline struct {
@@ -64,26 +75,42 @@ func Open(dir string) (*Store, error) {
 			return nil, err
 		}
 	}
-	s.st.SchemaVer = 1
-	if s.st.FirstSeen == nil {
-		s.st.FirstSeen = map[string]time.Time{}
-	}
-	if s.st.Suppressed == nil {
-		s.st.Suppressed = map[string]string{}
-	}
-	if s.st.Baselines == nil {
-		s.st.Baselines = map[string]*Baseline{}
-	}
-	if s.st.Updates == nil {
-		s.st.Updates = map[string]*model.UpdateStatus{}
-	}
-	if s.st.ImageScans == nil {
-		s.st.ImageScans = map[string]*model.ImageScan{}
-	}
-	if s.st.NotifiedIDs == nil {
-		s.st.NotifiedIDs = map[string]time.Time{}
-	}
+	s.st.init()
 	return s, nil
+}
+
+func (st *State) init() {
+	st.SchemaVer = 1
+	if st.RemovedHosts == nil {
+		st.RemovedHosts = map[string]time.Time{}
+	}
+	if st.FirstSeen == nil {
+		st.FirstSeen = map[string]time.Time{}
+	}
+	if st.Suppressed == nil {
+		st.Suppressed = map[string]string{}
+	}
+	if st.Baselines == nil {
+		st.Baselines = map[string]*Baseline{}
+	}
+	if st.Updates == nil {
+		st.Updates = map[string]*model.UpdateStatus{}
+	}
+	if st.ImageScans == nil {
+		st.ImageScans = map[string]*model.ImageScan{}
+	}
+	if st.NotifiedIDs == nil {
+		st.NotifiedIDs = map[string]time.Time{}
+	}
+}
+
+// Reset wipes all state (used when a remote host is removed) and saves.
+func (s *Store) Reset() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.st = State{CreatedAt: time.Now().UTC()}
+	s.st.init()
+	return s.saveLocked()
 }
 
 // Update runs fn with exclusive access and saves the result.

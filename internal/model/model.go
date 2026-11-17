@@ -93,6 +93,30 @@ type Finding struct {
 	FirstSeen   time.Time  `json:"firstSeen"`
 	LastSeen    time.Time  `json:"lastSeen"`
 	Suppressed  bool       `json:"suppressed,omitempty"`
+	DueAt       time.Time  `json:"dueAt,omitempty"` // FirstSeen + FixWithin[Severity]
+	Overdue     bool       `json:"overdue,omitempty"`
+}
+
+// FixWithin is the remediation deadline per severity, counted from FirstSeen.
+// Open findings past it are security debt.
+var FixWithin = map[Severity]time.Duration{
+	SevCritical: 7 * 24 * time.Hour,
+	SevHigh:     30 * 24 * time.Hour,
+	SevMedium:   90 * 24 * time.Hour,
+	SevLow:      180 * 24 * time.Hour,
+}
+
+// DebtAges are the upper bounds (days) of the Debt.Ages buckets; the last bucket is open-ended.
+var DebtAges = []int{7, 30, 90}
+
+// Debt summarises how long open (unsuppressed, low and above) findings have gone unfixed.
+type Debt struct {
+	Open       int              `json:"open"`
+	Overdue    int              `json:"overdue"`
+	BySeverity map[Severity]int `json:"overdueBySeverity"`
+	Ages       []int            `json:"ages"` // counts per DebtAges bucket: <7d, 7-30d, 30-90d, >90d
+	OldestDays int              `json:"oldestDays"`
+	DebtDays   int              `json:"debtDays"` // sum of days past due over overdue findings
 }
 
 // MakeID gives a stable identifier so a finding keeps its FirstSeen and
@@ -160,6 +184,16 @@ type ContainerView struct {
 	ByCat    map[Category]int  `json:"byCategory"`
 	Ports    []string          `json:"ports"`
 	Labels   map[string]string `json:"-"`
+	// Connectivity map
+	NetworkMode  string   `json:"networkMode,omitempty"`
+	Networks     []string `json:"networks"`
+	DockerSocket bool     `json:"dockerSocket,omitempty"` // mounts docker.sock (root-equivalent host access)
+}
+
+type NetworkView struct {
+	Name     string `json:"name"`
+	Driver   string `json:"driver"`
+	Internal bool   `json:"internal"` // no route outside the host
 }
 
 type ImageView struct {
@@ -203,9 +237,11 @@ type CategoryScore struct {
 }
 
 type HistoryPoint struct {
-	Time   time.Time        `json:"time"`
-	Score  int              `json:"score"`
-	Counts map[Severity]int `json:"counts"`
+	Time     time.Time        `json:"time"`
+	Score    int              `json:"score"`
+	Counts   map[Severity]int `json:"counts"`
+	Overdue  int              `json:"overdue"`
+	DebtDays int              `json:"debtDays"`
 }
 
 // Snapshot is the result of one full scan.
@@ -215,9 +251,11 @@ type Snapshot struct {
 	Score      int             `json:"score"`
 	Grade      string          `json:"grade"`
 	Categories []CategoryScore `json:"categories"`
+	Debt       Debt            `json:"debt"`
 	Findings   []Finding       `json:"findings"`
 	Containers []ContainerView `json:"containers"`
 	Images     []ImageView     `json:"images"`
+	Networks   []NetworkView   `json:"networks"`
 	Host       HostView        `json:"host"`
 	Errors     []string        `json:"errors,omitempty"`
 }

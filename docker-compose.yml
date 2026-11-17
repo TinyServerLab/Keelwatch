@@ -66,6 +66,12 @@ services:
       # KEELWATCH_BASE_URL: https://keelwatch.example.com
       # Serving under a path, e.g. https://apps.example.com/keelwatch ? Set:
       KEELWATCH_BASE_PATH: /keelwatch
+      # Multiple hosts (see README "Multiple hosts"):
+      #  on the hub, allow agents (file lines: pi-b=<openssl rand -hex 24>):
+      # KEELWATCH_AGENT_TOKENS_FILE: /run/secrets/agent_tokens
+      #  on an agent host, push to the hub instead (and drop `ports:` below):
+      # KEELWATCH_HUB_URL: https://keelwatch.example.com
+      # KEELWATCH_HUB_TOKEN_FILE: /run/secrets/hub_token
       # Optional Falco integration (Falcosidekick webhook):
       # KEELWATCH_FALCO_TOKEN_FILE: /run/secrets/falco_token
     secrets: [keelwatch_password]

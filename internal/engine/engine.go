@@ -28,6 +28,8 @@ type Config struct {
 	CheckUpdates   bool
 	NotifyMinSev   model.Severity
 	BaseURL        string
+	// AfterCommit runs (in its own goroutine) after each saved scan; agent mode pushes to the hub here.
+	AfterCommit func(context.Context)
 }
 
 type Engine struct {
@@ -68,6 +70,9 @@ func New(cfg Config, dc *docker.Client, reg registry.Checker, cve scan.CVEScanne
 	return &Engine{cfg: cfg, dc: dc, reg: reg, cve: cve, st: st, notif: n, log: log, now: func() time.Time { return time.Now().UTC() },
 		trig: make(chan struct{}, 1), cveQ: make(chan cveJob, 256), healthCmds: map[string]string{}, lastAlert: map[string]time.Time{}}
 }
+
+// SetAfterCommit installs the post-scan hook (agent mode). Call before Run.
+func (e *Engine) SetAfterCommit(fn func(context.Context)) { e.cfg.AfterCommit = fn }
 
 func (e *Engine) Busy() bool {
 	e.mu.Lock()
@@ -394,7 +399,25 @@ func (e *Engine) scan(ctx context.Context) (*model.Snapshot, error) {
 			}
 		}
 		sort.Strings(v.Ports)
+		v.NetworkMode = c.HostConfig.NetworkMode
+		for n := range c.NetworkSettings.Networks {
+			v.Networks = append(v.Networks, n)
+		}
+		sort.Strings(v.Networks)
+		for _, m := range c.Mounts {
+			if strings.HasSuffix(m.Source, "docker.sock") || strings.HasSuffix(m.Destination, "docker.sock") {
+				v.DockerSocket = true
+			}
+		}
 		snap.Containers = append(snap.Containers, v)
+	}
+	if nets, err := e.dc.Networks(ctx); err == nil {
+		for _, n := range nets {
+			snap.Networks = append(snap.Networks, model.NetworkView{Name: n.Name, Driver: n.Driver, Internal: n.Internal})
+		}
+		sort.Slice(snap.Networks, func(i, j int) bool { return snap.Networks[i].Name < snap.Networks[j].Name })
+	} else {
+		snap.Errors = append(snap.Errors, "list networks: "+err.Error())
 	}
 	used := map[string][]string{}
 	refOf := map[string]string{}
@@ -503,11 +526,15 @@ func (e *Engine) commit(ctx context.Context, snap *model.Snapshot) {
 				counts[f.Severity]++
 			}
 		}
-		s.History = append(s.History, model.HistoryPoint{Time: snap.ScannedAt, Score: snap.Score, Counts: counts})
+		s.History = append(s.History, model.HistoryPoint{Time: snap.ScannedAt, Score: snap.Score, Counts: counts,
+			Overdue: snap.Debt.Overdue, DebtDays: snap.Debt.DebtDays})
 		s.Snapshot = snap
 	})
 	if len(toNotify) > 0 && e.notif != nil && e.notif.Enabled() {
 		go e.sendFindings(ctx, snap, toNotify)
+	}
+	if e.cfg.AfterCommit != nil {
+		go e.cfg.AfterCommit(ctx)
 	}
 }
 
@@ -522,7 +549,7 @@ func (e *Engine) sendFindings(ctx context.Context, snap *model.Snapshot, fs []mo
 		}
 		fmt.Fprintf(&b, "• [%s] %s — %s\n", strings.ToUpper(string(f.Severity)), f.Title, f.Target)
 	}
-	title := fmt.Sprintf("Keelwatch: %d new issue(s), score %d (%s)", len(fs), snap.Score, snap.Grade)
+	title := fmt.Sprintf("Keelwatch [%s]: %d new issue(s), score %d (%s)", orHost(snap.Host.Name), len(fs), snap.Score, snap.Grade)
 	if err := e.notif.Send(ctx, notify.Message{Title: title, Body: b.String(), Severity: string(fs[0].Severity), URL: e.cfg.BaseURL}); err != nil {
 		e.log.Warn("notify failed", "err", err)
 	}

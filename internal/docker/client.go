@@ -105,6 +105,11 @@ func (c *Client) Network(ctx context.Context, name string) (Network, error) {
 	return v, c.get(ctx, "/networks/"+url.PathEscape(name), &v)
 }
 
+func (c *Client) Networks(ctx context.Context) ([]Network, error) {
+	var out []Network
+	return out, c.get(ctx, "/networks", &out)
+}
+
 func (c *Client) DiskUsage(ctx context.Context) (DiskUsage, error) {
 	var v DiskUsage
 	return v, c.get(ctx, "/system/df", &v)
@@ -248,6 +253,9 @@ type ContainerJSON struct {
 		Destination string
 		RW          bool
 	}
+	NetworkSettings struct {
+		Networks map[string]struct{ IPAddress string }
+	}
 }
 
 func (c ContainerJSON) DisplayName() string { return strings.TrimPrefix(c.Name, "/") }
@@ -278,8 +286,10 @@ type ImageInspect struct {
 }
 
 type Network struct {
-	Name    string
-	Options map[string]string
+	Name     string
+	Driver   string
+	Internal bool
+	Options  map[string]string
 }
 
 type DiskUsage struct {

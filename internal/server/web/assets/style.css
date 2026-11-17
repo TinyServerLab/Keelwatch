@@ -18,6 +18,20 @@ code { background: var(--surface-2); border: 1px solid var(--line); padding: 0 .
 .muted { color: var(--muted); } .small { font-size: 12px; } .err { color: var(--crit); min-height: 1.2em; }
 [hidden] { display: none !important; }
 
+/* network map */
+.nm { overflow-x: auto; }
+.nm svg { width: 100%; min-width: 760px; display: block; }
+.nm-node { cursor: pointer; outline: none; }
+.nm-node rect { fill: var(--surface-2); stroke-width: 1.5; }
+.nm-node:focus-visible rect, .nm-node.on rect { stroke-width: 3.5; fill: var(--surface); }
+.nm-t { fill: var(--text); font-size: 13px; font-weight: 600; }
+.nm-s { fill: var(--muted); font-size: 11px; }
+.nm-head { fill: var(--muted); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+.nm-edge { fill: none; stroke-width: 1.6; opacity: .85; }
+.nm-dim { opacity: .15; }
+.nm-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; }
+.nm-legend i { display: inline-block; width: 18px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+
 /* brand */
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: .02em; font-size: 16px; padding: 4px 10px 18px; }
 .brand.big { font-size: 22px; padding: 0 0 6px; }

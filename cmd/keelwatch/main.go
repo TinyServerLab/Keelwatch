@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -22,6 +23,7 @@ import (
 	"github.com/keelwatch/keelwatch/internal/demo"
 	"github.com/keelwatch/keelwatch/internal/docker"
 	"github.com/keelwatch/keelwatch/internal/engine"
+	"github.com/keelwatch/keelwatch/internal/hub"
 	"github.com/keelwatch/keelwatch/internal/model"
 	"github.com/keelwatch/keelwatch/internal/notify"
 	"github.com/keelwatch/keelwatch/internal/registry"
@@ -112,6 +114,7 @@ type setup struct {
 	demo    bool
 	trivy   string
 	dockerH string
+	dataDir string
 }
 
 func build(ctx context.Context, log *slog.Logger) (*setup, error) {
@@ -182,7 +185,7 @@ func build(ctx context.Context, log *slog.Logger) (*setup, error) {
 		WebhookURL: secret("KEELWATCH_WEBHOOK_URL"),
 	})
 	eng := engine.New(cfg, dc, reg, cve, st, n, log)
-	return &setup{eng: eng, st: st, notif: n, cfg: cfg, demo: demoMode, trivy: trivyBin, dockerH: dockerHost}, nil
+	return &setup{eng: eng, st: st, notif: n, cfg: cfg, demo: demoMode, trivy: trivyBin, dockerH: dockerHost, dataDir: dataDir}, nil
 }
 
 func serve(log *slog.Logger) error {
@@ -198,10 +201,40 @@ func serve(log *slog.Logger) error {
 	if basePath != "" && !basePathRe.MatchString(basePath) {
 		return fmt.Errorf("KEELWATCH_BASE_PATH %q must look like /keelwatch (letters, digits, - _ . ~ only)", basePath)
 	}
+	agents, err := hub.ParseAgents(secret("KEELWATCH_AGENT_TOKENS"))
+	if err != nil {
+		return fmt.Errorf("KEELWATCH_AGENT_TOKENS: %w", err)
+	}
+	agentNames := make([]string, 0, len(agents))
+	for n := range agents {
+		agentNames = append(agentNames, n)
+	}
+	sort.Strings(agentNames)
+	hubURL, hubTok := env("KEELWATCH_HUB_URL", ""), secret("KEELWATCH_HUB_TOKEN")
+	switch {
+	case (hubURL == "") != (hubTok == ""):
+		return errors.New("agent mode needs both KEELWATCH_HUB_URL and KEELWATCH_HUB_TOKEN")
+	case hubURL != "" && !strings.HasPrefix(hubURL, "https://") && !strings.HasPrefix(hubURL, "http://"):
+		return fmt.Errorf("KEELWATCH_HUB_URL %q must start with https://", hubURL)
+	case strings.HasPrefix(hubURL, "http://"):
+		log.Warn("KEELWATCH_HUB_URL is plain http; the agent token and scan results travel unencrypted")
+	}
+	if hubURL != "" {
+		hc := &hub.Client{URL: hubURL, Token: hubTok, Version: version, Interval: s.cfg.ScanInterval, CVE: s.eng.CVEEnabled}
+		// shortcut: a failed push waits for the next scan (≤ scan interval); add retry if hubs are often down.
+		s.eng.SetAfterCommit(func(ctx context.Context) {
+			if err := hc.Push(ctx, s.st); err != nil {
+				log.Warn("push to hub failed", "hub", hubURL, "err", err)
+			}
+		})
+		log.Info("agent mode: pushing scan results to hub", "hub", hubURL)
+	}
 	srv, err := server.New(server.Options{
 		Version: version, Password: secret("KEELWATCH_PASSWORD"), AuthDisabled: !boolEnv("KEELWATCH_AUTH", true) && !s.demo,
-		FalcoToken: falcoTok, Demo: s.demo, BasePath: basePath,
+		FalcoToken: falcoTok, Demo: s.demo, BasePath: basePath, Agents: agents, DataDir: s.dataDir,
 		Settings: map[string]any{
+			"Remote agents":         agentNames,
+			"Pushing to hub":        hubURL,
 			"Docker API":            s.dockerH,
 			"Base path":             basePath,
 			"Scan interval":         s.cfg.ScanInterval.String(),

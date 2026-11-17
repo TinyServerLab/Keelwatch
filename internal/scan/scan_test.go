@@ -1,6 +1,7 @@
 package scan
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -193,5 +194,31 @@ func TestScoreBehaviour(t *testing.T) {
 	Score(snap)
 	if snap.Score != low {
 		t.Fatalf("suppressed finding should not count: %d vs %d", snap.Score, low)
+	}
+}
+
+func TestDebt(t *testing.T) {
+	now := time.Date(2026, 11, 17, 0, 0, 0, 0, time.UTC)
+	day := 24 * time.Hour
+	fs := []model.Finding{
+		{Severity: model.SevCritical, FirstSeen: now.Add(-10 * day)}, // 3 days past a 7-day deadline
+		{Severity: model.SevHigh, FirstSeen: now.Add(-10 * day)},     // within 30 days
+		{Severity: model.SevMedium, FirstSeen: now.Add(-100 * day)},  // 10 days past 90
+		{Severity: model.SevCritical, FirstSeen: now.Add(-50 * day), Suppressed: true},
+		{Severity: model.SevInfo, FirstSeen: now.Add(-400 * day)},
+		{Severity: model.SevLow, FirstSeen: now.Add(-1 * day)},
+	}
+	d := debt(fs, now)
+	if d.Open != 4 || d.Overdue != 2 || d.BySeverity[model.SevCritical] != 1 || d.BySeverity[model.SevMedium] != 1 {
+		t.Fatalf("counts wrong: %+v", d)
+	}
+	if want := []int{1, 2, 0, 1}; fmt.Sprint(d.Ages) != fmt.Sprint(want) {
+		t.Errorf("age buckets %v, want %v", d.Ages, want)
+	}
+	if d.OldestDays != 100 || d.DebtDays != 4+11 {
+		t.Errorf("oldest %d debtDays %d", d.OldestDays, d.DebtDays)
+	}
+	if !fs[0].Overdue || fs[1].Overdue || fs[3].Overdue || !fs[0].DueAt.Equal(now.Add(-3*day)) {
+		t.Errorf("per-finding flags wrong: %+v", fs[:4])
 	}
 }

@@ -158,6 +158,7 @@ func Score(snap *model.Snapshot) {
 	for i := range snap.Containers {
 		snap.Containers[i].Score = smoothScore(byContainer[snap.Containers[i].ID], 40)
 	}
+	snap.Debt = debt(snap.Findings, snap.ScannedAt)
 	SortFindings(snap.Findings)
 	sort.SliceStable(snap.Containers, func(i, j int) bool { return snap.Containers[i].Score < snap.Containers[j].Score })
 }
@@ -172,4 +173,35 @@ func SortFindings(fs []model.Finding) {
 		}
 		return fs[i].Target < fs[j].Target
 	})
+}
+
+// debt marks overdue findings and summarises their age relative to now.
+func debt(fs []model.Finding, now time.Time) model.Debt {
+	d := model.Debt{BySeverity: map[model.Severity]int{}, Ages: make([]int, len(model.DebtAges)+1)}
+	for i := range fs {
+		f := &fs[i]
+		f.DueAt, f.Overdue = time.Time{}, false
+		within, ok := model.FixWithin[f.Severity]
+		if f.Suppressed || !ok || f.FirstSeen.IsZero() {
+			continue
+		}
+		d.Open++
+		days := int(now.Sub(f.FirstSeen).Hours() / 24)
+		b := 0
+		for b < len(model.DebtAges) && days >= model.DebtAges[b] {
+			b++
+		}
+		d.Ages[b]++
+		if days > d.OldestDays {
+			d.OldestDays = days
+		}
+		f.DueAt = f.FirstSeen.Add(within)
+		if now.After(f.DueAt) {
+			f.Overdue = true
+			d.Overdue++
+			d.BySeverity[f.Severity]++
+			d.DebtDays += int(now.Sub(f.DueAt).Hours()/24) + 1
+		}
+	}
+	return d
 }
