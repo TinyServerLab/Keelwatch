@@ -66,7 +66,8 @@
     $("#nav-findings").textContent = open || "";
     $("#nav-alerts").textContent = S.openAlerts || "";
     $("#demo-badge").hidden = !S.demo;
-    $("#version").textContent = "v" + String(S.version).replace(/^v/, ""); // CI builds pass the tag (v0.1.6)
+    const ver = String(S.version).replace(/^v/, ""); // CI builds pass the tag (v0.1.6)
+    $("#version").textContent = /^\d/.test(ver) ? "v" + ver : ver + " build"; // local source builds report "dev"
     const btn = $("#scan-btn");
     btn.hidden = !!ui.host; // remote hosts scan on their agent's schedule
     btn.disabled = S.scanning;

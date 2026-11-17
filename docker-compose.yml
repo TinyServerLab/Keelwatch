@@ -46,7 +46,7 @@ services:
 
   keelwatch:
     build: .
-    image: ghcr.io/tinyserverlab/keelwatch:v0.1.7
+    image: ghcr.io/tinyserverlab/keelwatch:0.1.7 # GHCR tags have no "v"; a wrong tag silently falls back to a local "dev" build
     container_name: keelwatch
     restart: unless-stopped
     depends_on: [socket-proxy]
